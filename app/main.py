@@ -282,6 +282,38 @@ def color_statistic_check(img: Image.Image):
     
     return ai_like, reasons, {"mean_s": float(mean_S), "high_s_ratio": float(high_S_ratio)}
 
+def noise_inconsistency_check(img: Image.Image):
+    w, h = img.size
+    # Ділимо зображення на квадранти (спрощено)
+    quadrants = [
+        img.crop((0, 0, w//2, h//2)),
+        img.crop((w//2, 0, w, h//2)),
+        img.crop((0, h//2, w//2, h)),
+        img.crop((w//2, h//2, w, h))
+    ]
+    
+    noise_stds = []
+    for q_img in quadrants:
+        # Повторно використовуємо ваш механізм обчислення шуму/текстури
+        _, _, noise_vals = noise_analysis(q_img) # Потрібно оновити noise_analysis для прийому img
+        noise_stds.append(noise_vals.get("noise_std", 0))
+
+    if len(noise_stds) < 4: return False, None # Занадто мале зображення
+
+    # Обчислюємо коефіцієнт варіації STD (STD від STD, поділений на середнє)
+    mean_std = np.mean(noise_stds)
+    std_std = np.std(noise_stds)
+    
+    # Високий коефіцієнт варіації вказує на неоднорідність шуму/текстури
+    inconsistency_ratio = std_std / (mean_std + 1e-6)
+    
+    is_inconsistent = inconsistency_ratio > 0.40 # Емпіричний поріг
+    
+    if is_inconsistent:
+        return True, f"✂️ Неоднорідність шуму/текстури (Коеф. варіації={inconsistency_ratio:.2f}) — сильна ознака монтажу"
+        
+    return False, None
+
 
 # --- Ендпоінти FastAPI (без змін) ---
 
@@ -360,20 +392,28 @@ async def analyze_image(file: UploadFile = File(...)):
     checks["color_stats"] = color_vals
     explanations += color_reasons
     
+    # 11) Аналіз неоднорідності шуму (NEW)
+    ai_inconsistent, inconsistency_reason, inconsistency_vals = noise_inconsistency_check(img)
+    checks["ai_inconsistent"] = ai_inconsistent
+    checks["noise_inconsistency"] = inconsistency_vals
+    if inconsistency_reason:
+        explanations.append(inconsistency_reason)
+    
     # ---- Зважування ознак (без змін) ----
     score = 0.0
     
     if ai_tool_found_exif or ai_found_png: score += 0.40
-    if not has_exif and not ai_found_png and fmt == "JPEG": score += 0.15
+    if not has_exif and not ai_found_png and fmt == "JPEG": score += 0.20
     if size_flags["mul64"]:               score += 0.20
     if size_flags["square_common"]:       score += 0.15
     if weird_alpha:                       score += 0.10
-    if ai_like_freq:                      score += 0.20
+    if ai_like_freq:                      score += 0.25
     if low_artifact_hint:                 score += 0.10
-    if ai_too_smooth:                     score += 0.15
-    if ai_color_weird:                    score += 0.10
+    if ai_too_smooth:                     score += 0.20
+    if ai_color_weird:                    score += 0.15
     if size_flags["is_uncommon_ratio"]:   score += 0.05
     if q_hint:                            score += 0.05
+    if ai_inconsistent:                   score += 0.25
     
     prob_ai = float(max(0.0, min(1.0, score)))
 
