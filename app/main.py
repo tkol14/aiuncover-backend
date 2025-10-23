@@ -8,15 +8,24 @@ import exifread
 import os
 import itertools
 from collections import Counter
+import cv2 # Додаємо OpenCV для розширеного аналізу шуму, якщо доступно
 
-app = FastAPI(title="AIUncover API", version="1.3.0 - Expanded", debug=os.environ.get("DEBUG", "False").lower() == "true")
+# Якщо cv2 недоступний, використовуємо емуляцію
+try:
+    _ = cv2.Laplacian
+except NameError:
+    print("Warning: OpenCV (cv2) not found. Falling back to NumPy/PIL for image processing.")
+    
+# --- Налаштування FastAPI ---
+
+app = FastAPI(title="AIUncover API", version="1.4.0 - Ultimate", debug=os.environ.get("DEBUG", "False").lower() == "true")
 
 ALLOWED_ORIGINS = [
     "https://aiuncover.net",
     "https://www.aiuncover.net",
     "https://aiuncover-backend-production.up.railway.app",
     "https://api.aiuncover.net",
-    "http://localhost:3000" # Додав для локального тестування, якщо потрібно
+    "http://localhost:3000"
 ]
 
 app.add_middleware(
@@ -32,7 +41,8 @@ class AnalyzeResponse(BaseModel):
     explanations: list[str]
     checks: dict
 
-# Оновлений список підказок для ШІ-інструментів
+# --- Константи ---
+
 AI_TOOL_HINTS = [
     "stable diffusion", "stablediffusion", "sdxl", "novelai",
     "midjourney", "dall-e", "dalle", "leonardo", "flux", "playground",
@@ -43,10 +53,26 @@ AI_TOOL_HINTS = [
 
 COMMON_AI_SIZES = {256, 384, 448, 512, 576, 640, 704, 768, 896, 960, 1024, 1152, 1280, 1536, 1792, 2048}
 UNCOMMON_RATIOS = {
-    (1, 1), (4, 3), (3, 4), (16, 9), (9, 16),
-} # Додамо типові фото-пропорції
+    (1, 1), (4, 3), (3, 4), (16, 9), (9, 16), (3, 2), (2, 3), (5, 4), (4, 5)
+}
+
+# --- Утиліти ---
+
+def gcd(a, b):
+    while b:
+        a, b = b, a % b
+    return a
+
+def load_image(raw: bytes):
+    bio = io.BytesIO(raw)
+    img = Image.open(bio)
+    img.load()
+    return img
+
+# --- Модулі Перевірок ---
 
 def read_exif_hints(raw: bytes):
+    # (Функція залишається як у попередньому варіанті)
     hints = []
     has_exif = False
     ai_tool_found = False
@@ -65,15 +91,14 @@ def read_exif_hints(raw: bytes):
     return has_exif, ai_tool_found, hints
 
 def png_metadata_check(img: Image.Image, fmt: str):
+    # (Функція залишається як у попередньому варіанті)
     reasons = []
     ai_prompt_found = False
     if fmt == "PNG":
         try:
-            # DALL-E, Midjourney та інші часто зберігають метадані у PNG tEXt chunks
             metadata = img.info
             text = json.dumps(metadata).lower()
             
-            # Пошук конкретних ключів або підказок ШІ
             if any(h in text for h in AI_TOOL_HINTS) or "prompt" in text or "parameters" in text:
                 reasons.append("🚩 PNG метадані (tEXt) містять підказки/промпт ШІ")
                 ai_prompt_found = True
@@ -81,47 +106,33 @@ def png_metadata_check(img: Image.Image, fmt: str):
                 reasons.append(f"🚩 PNG метадані: у полі 'Software' знайдено ШІ-інструмент")
 
         except Exception:
-            reasons.append("❌ Не вдалося прочитати PNG метадані")
+            pass # Ігноруємо помилки
     return ai_prompt_found, reasons
 
-def load_image(raw: bytes):
-    bio = io.BytesIO(raw)
-    img = Image.open(bio)
-    img.load()
-    return img
-
-def gcd(a, b):
-    while b:
-        a, b = b, a % b
-    return a
-
 def size_checks(img: Image.Image):
+    # (Функція залишається як у попередньому варіанті)
     w, h = img.size
     reasons = []
     flags = {}
     
-    # Кратність 64/8
     mul_64 = (w % 64 == 0) and (h % 64 == 0)
     mul_8 = (w % 8 == 0) and (h % 8 == 0)
-    
-    # Типові квадратні ШІ-розміри
     square_common = (w == h) and (w in COMMON_AI_SIZES)
     
-    # Нетипові пропорції
     g = gcd(w, h)
     ratio = (w // g, h // g)
     is_uncommon_ratio = ratio not in UNCOMMON_RATIOS and max(w, h) >= 512
     
     if mul_64:
-        reasons.append("📏 Розміри кратні 64 (сильна ознака генераторів Stable Diffusion, SDXL)")
+        reasons.append("📏 Розміри кратні 64 (сильна ознака Stable Diffusion, SDXL)")
     elif mul_8:
-        reasons.append("📏 Розміри кратні 8 (слабка ознака генераторів/оптимізації)")
+        reasons.append("📏 Розміри кратні 8 (слабка ознака)")
         
     if square_common:
         reasons.append(f"🖼️ Квадратний формат {w}×{h}, типовий для ШІ-моделей")
         
     if is_uncommon_ratio and (w not in COMMON_AI_SIZES and h not in COMMON_AI_SIZES):
-            reasons.append(f"📐 Нетипова чи дуже висока/низька пропорція {ratio[0]}:{ratio[1]} для фото")
+        reasons.append(f"📐 Нетипова чи дуже висока/низька пропорція {ratio[0]}:{ratio[1]} для фото")
         
     flags["mul64"] = mul_64
     flags["square_common"] = square_common
@@ -130,30 +141,28 @@ def size_checks(img: Image.Image):
     return flags, reasons
 
 def alpha_channel_weird(img: Image.Image, fmt: str):
+    # (Функція залишається як у попередньому варіанті)
     has_alpha = img.mode in ("LA", "RGBA", "P", "PA")
     if fmt == "JPEG" and has_alpha:
-        return True, "⚠️ JPEG з альфа-каналом — нетипово для фотографії, може вказувати на конвертацію"
+        return True, "⚠️ JPEG з альфа-каналом — нетипово для фотографії"
     return False, None
 
 def high_freq_heuristic(img: Image.Image):
-    # Легка евристика: варіація Лапласіана + частотна енергія (не змінено)
+    # (Функція залишається як у попередньому варіанті)
     gray = ImageOps.grayscale(img)
     gray_small = gray.resize((256, int(256 * gray.height / gray.width)), Image.Resampling.LANCZOS) if gray.width > 256 else gray
     arr = np.asarray(gray_small, dtype=np.float32) / 255.0
 
-    # Лапласіан через ядро
     k = np.array([[0, 1, 0],
                   [1,-4, 1],
                   [0, 1, 0]], dtype=np.float32)
     
-    # Використовуємо згортку NumPy
     pad_width = 1
     arr_padded = np.pad(arr, pad_width, mode='edge')
     lap = np.abs(np.array([[np.sum(arr_padded[i:i+3, j:j+3] * k) for j in range(arr.shape[1])] for i in range(arr.shape[0])]))
 
     lap_var = float(np.var(lap))
 
-    # FFT енергія високих частот
     f = np.fft.fft2(arr)
     fshift = np.fft.fftshift(f)
     mag = np.abs(fshift)
@@ -161,23 +170,20 @@ def high_freq_heuristic(img: Image.Image):
     cy, cx = h//2, w//2
     r = min(cy, cx)
     
-    # Низькі частоти - центральна чверть
     low = mag[cy-r//4:cy+r//4, cx-r//4:cx+r//4].sum() + 1e-6
     high = mag.sum() - low
     high_ratio = float(high / (high + low))
 
-    # Евристика: дуже низький LapVar і водночас помірно високий high_ratio -> "пластмасовість"
     ai_like = (lap_var < 0.0003 and high_ratio > 0.55)
     expl = f"🔬 Локальна різкість (var Laplacian={lap_var:.4f}), частотне насичення={high_ratio:.2f}"
     
-    # Якщо показники вказують на "пластмасовість"
     if ai_like:
-        expl = "🧠 Синтетична текстура: дуже низька локальна різкість і помірно висока частотна енергія (ознака 'пластмасовості' ШІ)"
+        expl = "🧠 Синтетична текстура: дуже низька локальна різкість (Laplacian Var) та висока частотна енергія ('пластмасовість')"
         
     return ai_like, expl, {"lap_var": lap_var, "high_ratio": high_ratio}
 
 def jpeg_quant_hint(img: Image.Image, fmt: str):
-    # Не змінюємо, залишаємо як є
+    # (Функція залишається як у попередньому варіанті)
     try:
         if fmt == "JPEG" and hasattr(img, "quantization") and img.quantization:
             q = img.quantization
@@ -190,41 +196,112 @@ def jpeg_quant_hint(img: Image.Image, fmt: str):
     return False, None
 
 def jpeg_artifact_hint(img: Image.Image, fmt: str):
-    # Евристика для артефактів подвійного стиснення (JPEG Ghost/ELA)
+    # (Функція залишається як у попередньому варіанті)
     if fmt == "JPEG" and img.mode in ("RGB", "L"):
         try:
-            # Ідея: стиснути зображення з високою якістю (наприклад, Q=95) і порівняти з оригіналом.
-            # Якщо зображення вже стиснуто, то різниця (залишкові артефакти) має бути відносно рівномірною.
-            # Якщо зображення згенеровано ШІ, артефакти можуть бути нетиповими.
-            
-            # Створюємо тимчасовий буфер і стискаємо з Q=95
             temp_io = io.BytesIO()
             img.save(temp_io, format="JPEG", quality=95)
             re_compressed = Image.open(temp_io)
             
-            # Обчислюємо різницю (ELA-подібний ефект)
             diff = ImageChops.difference(img, re_compressed)
-            # Перетворюємо в чорно-біле і знаходимо середнє відхилення
             diff_gray = ImageOps.grayscale(diff)
             arr = np.asarray(diff_gray, dtype=np.float32)
             
-            # Стандартне відхилення різниці (яка має бути низькою для "чистого" ШІ)
             std_dev = np.std(arr)
-            
-            # Середнє відхилення (яке має бути вищим для пере-стиснутих)
             mean_abs_dev = np.mean(np.abs(arr))
             
-            # Емпірична евристика
-#            Чисті ШІ-зображення (без подальшого стиснення) можуть мати дуже низький std_dev.
-            is_low_artifact = (std_dev < 10.0 and mean_abs_dev < 5.0) # Залежить від якості оригіналу
+            is_low_artifact = (std_dev < 10.0 and mean_abs_dev < 5.0)
             
             if is_low_artifact:
-                # Дуже низьке відхилення після ре-компресії може вказувати на "чисте" зображення
-                return True, "🖼️ Дуже низький рівень артефактів (STD={std_dev:.2f}, Mean={mean_abs_dev:.2f}) після ре-компресії (може бути перше збереження ШІ)"
+                return True, f"🖼️ Дуже низький рівень артефактів (STD={std_dev:.2f}) після ре-компресії (може бути перше збереження ШІ)"
                 
         except Exception:
-            pass # Ігноруємо помилки
+            pass
     return False, None
+
+def noise_analysis(img: Image.Image):
+    """
+    Аналіз шуму:
+    1. Перевірка на *відсутність* шуму, типову для ідеальних ШІ-зображень.
+    2. Якщо є OpenCV: Виділення шуму за допомогою вейвлет-фільтрів або високочастотних фільтрів.
+    """
+    
+    # 1. Спрощений аналіз шуму (якщо немає CV2):
+    # Шукаємо однорідні ділянки і перевіряємо їхнє стандартне відхилення.
+    gray = ImageOps.grayscale(img)
+    arr = np.asarray(gray, dtype=np.float32)
+    # Використовуємо високочастотний фільтр (наприклад, Лапласіан)
+    # Знову використовуємо LapVar як проксі.
+    try:
+        if 'cv2' in globals() and hasattr(cv2, 'Laplacian'):
+            arr_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+            laplacian = cv2.Laplacian(arr_cv, cv2.CV_64F)
+            noise_std = np.std(laplacian)
+        else:
+            # Якщо немає cv2, використовуємо LapVar з попередньої функції
+            _, _, freq_vals = high_freq_heuristic(img)
+            noise_std = np.sqrt(freq_vals["lap_var"]) * 100 # Просто масштабуємо
+
+    except Exception:
+        # У випадку помилки при обробці
+        return False, "❌ Помилка в аналізі шуму", {"noise_std": -1.0}
+
+
+    # Евристика:
+    # 1. Надто низьке STD шуму (нижче 0.05) - може вказувати на агресивне згладжування/відсутність природного шуму.
+    # 2. Нетипові "блокові" шуми. (Складно без повноцінного PRNU, але можна спростити).
+    
+    ai_too_smooth = noise_std < 5.0 if 'cv2' in globals() and hasattr(cv2, 'Laplacian') else noise_std < 0.015
+    
+    if ai_too_smooth:
+        expl = f"✨ Надто гладке зображення: Надзвичайно низький рівень шуму/текстури (STD={noise_std:.2f}) — може бути ознакою ШІ-генерації або агресивного Denoising."
+        return True, expl, {"noise_std": float(noise_std)}
+        
+    return False, f"🔬 Аналіз шуму: STD={noise_std:.2f} (в межах норми)", {"noise_std": float(noise_std)}
+
+
+def color_statistic_check(img: Image.Image):
+    """
+    Аналіз колірної статистики:
+    1. Перенасиченість (типова для деяких ШІ).
+    2. Обмежена/неприродна палітра.
+    """
+    
+    # Конвертуємо в HSV (відтінок, насиченість, яскравість)
+    try:
+        hsv_img = img.convert("HSV")
+        hsv_arr = np.asarray(hsv_img, dtype=np.float32) / 255.0
+    except Exception:
+        return False, "❌ Помилка конвертації в HSV", {}
+        
+    # Аналіз насиченості (Saturation)
+    S = hsv_arr[:, :, 1]
+    mean_S = np.mean(S)
+    
+    # 1. Перенасиченість: ШІ часто генерує занадто яскраві/насичені зображення.
+    is_oversaturated = mean_S > 0.60
+    
+    # 2. Перевірка на "чисті" кольори (якщо більшість пікселів має S~1.0)
+    high_S_count = np.sum(S > 0.95)
+    total_pixels = S.size
+    high_S_ratio = high_S_count / total_pixels
+    
+    is_cartoon_like = high_S_ratio > 0.05
+    
+    reasons = []
+    
+    if is_oversaturated:
+        reasons.append(f"🌈 Висока середня насиченість ({mean_S:.2f}) — типово для деяких ШІ")
+        
+    if is_cartoon_like:
+        reasons.append(f"🎨 Багато 'чистих' кольорів ({high_S_ratio:.2%}) — може вказувати на синтетичну/мультяшну гаму")
+
+    ai_like = is_oversaturated or is_cartoon_like
+    
+    return ai_like, reasons, {"mean_s": float(mean_S), "high_s_ratio": float(high_S_ratio)}
+
+
+# --- Ендпоінти FastAPI ---
 
 @app.get("/health")
 def health():
@@ -249,13 +326,13 @@ async def analyze_image(file: UploadFile = File(...)):
     try:
         img = load_image(raw)
     except Exception:
-        explanations.append("❌ Не вдалося відкрити зображення (непідтримуваний або пошкоджений файл)")
+        explanations.append("❌ Не вдалося відкрити зображення")
         return AnalyzeResponse(prob_ai=0.8, explanations=explanations, checks={"open_error": True})
 
     fmt = (img.format or "").upper()
     checks["format"] = fmt
 
-    # 3) PNG метадані (якщо PNG)
+    # 3) PNG метадані
     ai_found_png, png_reasons = png_metadata_check(img, fmt)
     checks["ai_found_png_metadata"] = ai_found_png
     explanations += png_reasons
@@ -265,19 +342,19 @@ async def analyze_image(file: UploadFile = File(...)):
     checks.update(size_flags)
     explanations += size_reasons
 
-    # 5) Альфа-канал (дивні комбінації)
+    # 5) Альфа-канал
     weird_alpha, alpha_reason = alpha_channel_weird(img, fmt)
     checks["weird_alpha"] = weird_alpha
     if alpha_reason:
         explanations.append(alpha_reason)
 
-    # 6) Проста частотна евристика (пластмасовість/надто синтетичні краї)
+    # 6) Проста частотна евристика (пластмасовість)
     ai_like_freq, freq_expl, freq_vals = high_freq_heuristic(img)
     checks["ai_like_freq"] = ai_like_freq
     checks["freq"] = freq_vals
     explanations.append(freq_expl)
 
-    # 7) JPEG quantization (слабка ознака)
+    # 7) JPEG quantization
     q_hint, q_reason = jpeg_quant_hint(img, fmt)
     checks["jpeg_quant_weird"] = q_hint
     if q_reason:
@@ -288,42 +365,57 @@ async def analyze_image(file: UploadFile = File(...)):
     checks["low_artifact_hint"] = low_artifact_hint
     if artifact_reason:
         explanations.append(artifact_reason)
+        
+    # 9) Аналіз шуму (NEW)
+    ai_too_smooth, noise_expl, noise_vals = noise_analysis(img)
+    checks["ai_too_smooth"] = ai_too_smooth
+    checks["noise"] = noise_vals
+    explanations.append(noise_expl)
     
-    # ---- Зважування ознак (легка лінійна комбінація) ----
+    # 10) Аналіз колірної статистики (NEW)
+    ai_color_weird, color_reasons, color_vals = color_statistic_check(img)
+    checks["ai_color_weird"] = ai_color_weird
+    checks["color_stats"] = color_vals
+    explanations += color_reasons
+    
+    # ---- Зважування ознак ----
     score = 0.0
     
-    # Сильні ознаки
-    if ai_tool_found_exif or ai_found_png: score += 0.40 # Найсильніший доказ
-    if not has_exif and not ai_found_png and fmt == "JPEG": score += 0.15 # Відсутність EXIF у JPEG
-    if size_flags["mul64"]:               score += 0.20 # Кратність 64
-    if size_flags["square_common"]:       score += 0.15 # Типовий квадрат
+    # Найсильніші ознаки
+    if ai_tool_found_exif or ai_found_png: score += 0.40
     
-    # Помірні ознаки
+    # Сильні ознаки
+    if not has_exif and not ai_found_png and fmt == "JPEG": score += 0.15
+    if size_flags["mul64"]:               score += 0.20
+    if size_flags["square_common"]:       score += 0.15
+    
+    # Помірні/Синтетичні ознаки
     if weird_alpha:                       score += 0.10
-    if ai_like_freq:                      score += 0.20 # Синтетична текстура
-    if size_flags["is_uncommon_ratio"]:   score += 0.05
-    if low_artifact_hint:                 score += 0.10 # Схоже на чисте перше збереження
+    if ai_like_freq:                      score += 0.20 # Пластмасовість
+    if low_artifact_hint:                 score += 0.10 # Чисте перше збереження
+    if ai_too_smooth:                     score += 0.15 # Відсутність шуму
+    if ai_color_weird:                    score += 0.10 # Неприродна гама/насиченість
 
     # Слабкі ознаки
+    if size_flags["is_uncommon_ratio"]:   score += 0.05
     if q_hint:                            score += 0.05
     
     # Потолок і підлога
     prob_ai = float(max(0.0, min(1.0, score)))
 
-    # Нормалізація для дуже малих або дуже великих зображень
+    # Нормалізація для розмірів (якщо зображення дуже мале, довіра до аналізу нижча)
     w, h = size_flags["size"]
     max_dim = max(w, h)
     
     if max_dim < 384:
-        prob_ai = min(1.0, prob_ai + 0.05) # Невеликі ШІ-зображення
+        prob_ai = min(1.0, prob_ai + 0.05)
 
     if max_dim > 2048 and not ai_tool_found_exif:
-        # Дуже великі розміри менш типові для стандартних публічних ШІ-моделей
         prob_ai = max(0.0, prob_ai - 0.10) 
 
 
     return AnalyzeResponse(
         prob_ai=round(prob_ai, 2),
-        explanations=explanations or ["✅ Ознак ШІ не виявлено явних (або зображення добре оброблено)"],
+        explanations=explanations or ["✅ Ознак ШІ не виявлено явних (зображення виглядає як звичайне фото)"],
         checks=checks
     )
