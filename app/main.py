@@ -435,7 +435,6 @@ async def analyze_image(file: UploadFile = File(...)):
         elif isinstance(v, (np.float32, np.float64)):
             final_checks[k] = float(v)
         elif isinstance(v, dict):
-             # Рекурсивно конвертуємо вкладені словники (наприклад, checks["freq"])
             sub_dict = {}
             for sub_k, sub_v in v.items():
                 if isinstance(sub_v, (np.float32, np.float64)):
@@ -449,5 +448,5 @@ async def analyze_image(file: UploadFile = File(...)):
     return AnalyzeResponse(
         prob_ai=round(prob_ai, 2),
         explanations=explanations or ["✅ Ознак ШІ не виявлено явних (зображення виглядає як звичайне фото)"],
-        checks=final_checks # ⬅️ Використовуємо очищений словник
+        checks=final_checks
     )
