@@ -5,11 +5,13 @@ from pydantic import BaseModel
 
 app = FastAPI(title="AIUncover API", version="1.0")
 
+ALLOWED_ORIGINS = ["https://aiuncover.net", "https://api.aiuncover.net"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
