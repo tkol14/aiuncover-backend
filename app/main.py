@@ -310,9 +310,9 @@ def noise_inconsistency_check(img: Image.Image):
     is_inconsistent = inconsistency_ratio > 0.40 # Емпіричний поріг
     
     if is_inconsistent:
-        return True, f"✂️ Неоднорідність шуму/текстури (Коеф. варіації={inconsistency_ratio:.2f}) — сильна ознака монтажу"
+        return True, f"✂️ Неоднорідність шуму/текстури (Коеф. варіації={inconsistency_ratio:.2f}) — сильна ознака монтажу", {"inconsistency_ratio": float(inconsistency_ratio)}
         
-    return False, None
+    return False, None, {"inconsistency_ratio": float(inconsistency_ratio)}
 
 
 # --- Ендпоінти FastAPI (без змін) ---
