@@ -5,3 +5,4 @@ python-multipart
 pillow
 numpy
 exifread
+opencv-python
