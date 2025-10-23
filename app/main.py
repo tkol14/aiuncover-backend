@@ -167,7 +167,7 @@ def high_freq_heuristic(img: Image.Image):
     high = mag.sum() - low
     high_ratio = float(high / (high + low))
 
-    ai_like = (lap_var < 0.0003 and high_ratio > 0.55)
+    ai_like = (lap_var < 0.0004 and high_ratio > 0.50)
     expl = f"🔬 Локальна різкість (var Laplacian={lap_var:.4f}), частотне насичення={high_ratio:.2f}"
     
     if ai_like:
@@ -307,7 +307,7 @@ def noise_inconsistency_check(img: Image.Image):
     # Високий коефіцієнт варіації вказує на неоднорідність шуму/текстури
     inconsistency_ratio = std_std / (mean_std + 1e-6)
     
-    is_inconsistent = inconsistency_ratio > 0.40 # Емпіричний поріг
+    is_inconsistent = inconsistency_ratio > 0.30 # Емпіричний поріг
     
     if is_inconsistent:
         return True, f"✂️ Неоднорідність шуму/текстури (Коеф. варіації={inconsistency_ratio:.2f}) — сильна ознака монтажу", {"inconsistency_ratio": float(inconsistency_ratio)}
