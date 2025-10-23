@@ -407,13 +407,13 @@ async def analyze_image(file: UploadFile = File(...)):
     if size_flags["mul64"]:               score += 0.20
     if size_flags["square_common"]:       score += 0.15
     if weird_alpha:                       score += 0.10
-    if ai_like_freq:                      score += 0.25
+    if ai_like_freq:                      score += 0.30
     if low_artifact_hint:                 score += 0.10
-    if ai_too_smooth:                     score += 0.20
+    if ai_too_smooth:                     score += 0.25
     if ai_color_weird:                    score += 0.15
     if size_flags["is_uncommon_ratio"]:   score += 0.05
     if q_hint:                            score += 0.05
-    if ai_inconsistent:                   score += 0.25
+    if ai_inconsistent:                   score += 0.40
     
     prob_ai = float(max(0.0, min(1.0, score)))
 
