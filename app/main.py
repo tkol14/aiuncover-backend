@@ -387,8 +387,27 @@ async def analyze_image(file: UploadFile = File(...)):
         prob_ai = max(0.0, prob_ai - 0.10) 
 
 
+    # Проходимося по словнику checks та конвертуємо всі булеві/числові типи NumPy
+    final_checks = {}
+    for k, v in checks.items():
+        if isinstance(v, np.bool_):
+            final_checks[k] = bool(v)
+        elif isinstance(v, (np.float32, np.float64)):
+            final_checks[k] = float(v)
+        elif isinstance(v, dict):
+             # Рекурсивно конвертуємо вкладені словники (наприклад, checks["freq"])
+            sub_dict = {}
+            for sub_k, sub_v in v.items():
+                if isinstance(sub_v, (np.float32, np.float64)):
+                    sub_dict[sub_k] = float(sub_v)
+                else:
+                    sub_dict[sub_k] = sub_v
+            final_checks[k] = sub_dict
+        else:
+            final_checks[k] = v
+
     return AnalyzeResponse(
         prob_ai=round(prob_ai, 2),
         explanations=explanations or ["✅ Ознак ШІ не виявлено явних (зображення виглядає як звичайне фото)"],
-        checks=checks
+        checks=final_checks # ⬅️ Використовуємо очищений словник
     )
