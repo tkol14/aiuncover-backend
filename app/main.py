@@ -167,7 +167,7 @@ def high_freq_heuristic(img: Image.Image):
     high = mag.sum() - low
     high_ratio = float(high / (high + low))
 
-    ai_like = (lap_var < 0.0004 and high_ratio > 0.50)
+    ai_like = (lap_var < 0.006 and high_ratio > 0.50)
     expl = f"🔬 Локальна різкість (var Laplacian={lap_var:.4f}), частотне насичення={high_ratio:.2f}"
     
     if ai_like:
@@ -242,7 +242,7 @@ def noise_analysis(img: Image.Image):
         return False, "❌ Помилка в аналізі шуму (NumPy/PIL)", {"noise_std": -1.0}
 
     # Емпірична евристика для NumPy Lap Std (менше 0.005 часто вказує на надмірну гладкість)
-    ai_too_smooth = noise_std < 0.004 
+    ai_too_smooth = noise_std > 14 
     
     if ai_too_smooth:
         expl = f"✨ Надто гладке зображення: Надзвичайно низький рівень шуму/текстури (Laplacian STD={noise_std:.4f}) — може бути ознакою ШІ-генерації або агресивного Denoising."
