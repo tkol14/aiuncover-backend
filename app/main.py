@@ -24,6 +24,10 @@ class AnalyzeResponse(BaseModel):
 def health():
     return {"status":"ok"}
 
+@app.get("/")
+def root():
+    return {"ok":True}
+
 @app.post("/analyze/image", response_model=AnalyzeResponse)
 async def analyze_image(file: UploadFile = File(...)):
     content = await file.read()
