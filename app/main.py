@@ -5,7 +5,9 @@ from pydantic import BaseModel
 
 app = FastAPI(title="AIUncover API", version="1.0")
 
-ALLOWED_ORIGINS = ["https://aiuncover.net", "https://api.aiuncover.net", "https://6my6x5ic.up.railway.app"]
+ALLOWED_ORIGINS = ["https://aiuncover.net", "https://api.aiuncover.net",
+                   "https://6my6x5ic.up.railway.app", "https://aiuncover-backend-production.up.railway.app"
+                   ]
 
 app.add_middleware(
     CORSMiddleware,
