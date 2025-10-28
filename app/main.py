@@ -381,6 +381,125 @@ def noise_inconsistency_check(ctx: ImgCtx):
                       f"сильна ознака монтажу"), {"inconsistency_ratio": inconsistency_ratio}
     return False, None, {"inconsistency_ratio": inconsistency_ratio}
 
+def ela_check(ctx: ImgCtx):
+    if ctx.fmt != "JPEG":
+        return False, None, {"ela_mean": 0.0, "ela_std": 0.0, "ela_p95": 0.0}
+    try:
+        base = _cap_long_edge(ctx.rgb, 1280)
+        bio = io.BytesIO()
+        # quality 90 is a good balance for signal
+        base.save(bio, format="JPEG", quality=90)
+        bio.seek(0)
+        recompressed = Image.open(bio).convert("RGB")
+
+        # grayscale diff
+        diff = ImageChops.difference(base, recompressed)
+        arr = np.asarray(ImageOps.grayscale(diff), dtype=np.float32)
+
+        ela_mean = float(np.mean(arr))
+        ela_std  = float(np.std(arr))
+        ela_p95  = float(np.percentile(arr, 95))
+
+        # Heuristic: very uniform + low magnitude ELA → “one-pass” look
+        ai_like = (ela_std < 3.0 and ela_p95 < 12.0)
+        if ai_like:
+            return True, (f"🧪 Дуже низький/однорідний ELA (mean={ela_mean:.2f}, "
+                          f"std={ela_std:.2f}, p95={ela_p95:.1f}) — схоже на одноразове "
+                          f"JPEG-збереження (часто для генерацій ШІ)"),
+            {"ela_mean": ela_mean, "ela_std": ela_std, "ela_p95": ela_p95}
+        return False, f"🔬 ELA: mean={ela_mean:.2f}, std={ela_std:.2f}, p95={ela_p95:.1f}", \
+               {"ela_mean": ela_mean, "ela_std": ela_std, "ela_p95": ela_p95}
+    except Exception:
+        return False, "❌ Помилка ELA", {"ela_mean": -1.0, "ela_std": -1.0, "ela_p95": -1.0}
+
+def periodicity_check(ctx: ImgCtx):
+    a = ctx.gray_small_f32
+    f = np.fft.fft2(a)
+    mag = np.abs(np.fft.fftshift(f))
+
+    h, w = mag.shape
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    R = np.sqrt((Y - cy)**2 + (X - cx)**2)
+
+    rmin, rmax = 0.20 * min(cy, cx), 0.45 * min(cy, cx)
+    ann = (R >= rmin) & (R <= rmax)
+    ring = mag[ann]
+    if ring.size == 0:
+        return False, None, {"periodic_peak_ratio": 0.0}
+
+    # robust baseline
+    med = float(np.median(ring))
+    if med <= 0:
+        return False, None, {"periodic_peak_ratio": 0.0}
+
+    # top-k peaks in the annulus
+    topk = np.sort(ring.flatten())[-256:] if ring.size > 256 else ring
+    peak_ratio = float(np.max(topk) / med)
+
+    ai_like = peak_ratio > 6.0
+    if ai_like:
+        return True, f"🧩 Яскраві періодичні піки у спектрі (peak/median={peak_ratio:.1f}) — схоже на апскейл/‘checkerboard’", \
+               {"periodic_peak_ratio": peak_ratio}
+    return False, None, {"periodic_peak_ratio": peak_ratio}
+
+def banding_check(ctx: ImgCtx):
+    g = (ctx.gray_u8).astype(np.int32)
+    hist, _ = np.histogram(g, bins=256, range=(0, 255))
+    zeros = int(np.sum(hist == 0))
+
+    # gradient histogram for banding amplification
+    gy, gx = np.gradient(ctx.gray_f32)
+    grad = np.hypot(gx, gy)
+    ghist, _ = np.histogram(grad, bins=64, range=(0.0, float(np.max(grad) + 1e-6)))
+    gzeros = int(np.sum(ghist == 0))
+
+    zeros_ratio = zeros / 256.0
+    gzeros_ratio = gzeros / 64.0
+
+    ai_like = (zeros_ratio > 0.30 and gzeros_ratio > 0.25 and np.std(grad) < 0.06)
+    if ai_like:
+        return True, (f"🪄 Сильна постеризація/бендінг (0-бінів: {zeros_ratio:.0%}, "
+                      f"градієнтні 0-біни: {gzeros_ratio:.0%}) — синтетичні переходи"),
+        {"zeros_ratio": float(zeros_ratio), "grad_zeros_ratio": float(gzeros_ratio)}
+    return False, None, {"zeros_ratio": float(zeros_ratio), "grad_zeros_ratio": float(gzeros_ratio)}
+
+def symmetry_check(ctx: ImgCtx):
+    arr = ctx.gray_small_f32
+    h, w = arr.shape
+    if w < 32:
+        return False, None, {"sym_corr": 0.0}
+
+    mid = w // 2
+    left = arr[:, :mid]
+    right = arr[:, w - mid:]
+    right_flipped = np.flip(right, axis=1)
+
+    # normalize
+    l = (left - left.mean()) / (left.std() + 1e-6)
+    r = (right_flipped - right_flipped.mean()) / (right_flipped.std() + 1e-6)
+
+    corr = float(np.mean(l * r))
+    ai_like = corr > 0.92
+    if ai_like:
+        return True, f"🪞 Ненормально висока двостороння симетрія (corr={corr:.2f})", {"sym_corr": corr}
+    return False, None, {"sym_corr": corr}
+
+def palette_compactness_check(ctx: ImgCtx):
+    # downsample for speed and to stabilize measure
+    tiny = ctx.rgb.resize((128, max(1, int(128 * ctx.h / max(ctx.w, 1)))), Image.Resampling.BILINEAR)
+    arr = np.asarray(tiny, dtype=np.uint8)
+    flat = arr.reshape(-1, 3)
+    # pack into 24-bit ints to count uniques fast
+    packed = (flat[:,0].astype(np.uint32) << 16) | (flat[:,1].astype(np.uint32) << 8) | flat[:,2].astype(np.uint32)
+    uniq = int(np.unique(packed).size)
+
+    # heuristic threshold: very small palette for photo-like resolution
+    ai_like = (max(ctx.w, ctx.h) >= 1024 and uniq < 1800)
+    if ai_like:
+        return True, f"🎨 Дуже компактна палітра ({uniq} унікальних кольорів @128px) — непритаманно для фото", {"unique_colors_128": uniq}
+    return False, None, {"unique_colors_128": uniq}
+
 # ---------------- Endpoints ----------------
 
 @app.get("/health")
@@ -465,6 +584,36 @@ async def analyze_image(file: UploadFile = File(...)):
     if inconsistency_reason:
         explanations.append(inconsistency_reason)
 
+    # 12) ELA (JPEG only)
+    ai_ela, ela_reason, ela_vals = ela_check(ctx)
+    checks["ai_ela"] = ai_ela
+    checks["ela"] = ela_vals
+    if ela_reason: explanations.append(ela_reason)
+
+    # 13) Periodicity / tiling peaks
+    ai_periodic, periodic_reason, periodic_vals = periodicity_check(ctx)
+    checks["ai_periodic"] = ai_periodic
+    checks["periodicity"] = periodic_vals
+    if periodic_reason: explanations.append(periodic_reason)
+
+    # 14) Banding / Posterization
+    ai_banding, banding_reason, banding_vals = banding_check(ctx)
+    checks["ai_banding"] = ai_banding
+    checks["banding"] = banding_vals
+    if banding_reason: explanations.append(banding_reason)
+
+    # 15) Global symmetry
+    ai_sym, sym_reason, sym_vals = symmetry_check(ctx)
+    checks["ai_symmetry"] = ai_sym
+    checks["symmetry"] = sym_vals
+    if sym_reason: explanations.append(sym_reason)
+
+    # 16) Palette compactness
+    ai_palette, palette_reason, palette_vals = palette_compactness_check(ctx)
+    checks["ai_palette_compact"] = ai_palette
+    checks["palette"] = palette_vals
+    if palette_reason: explanations.append(palette_reason)
+
     # ---- Scoring (unchanged) ----
     score = 0.0
     if ai_tool_found_exif or ai_found_png: score += 0.40
@@ -479,6 +628,12 @@ async def analyze_image(file: UploadFile = File(...)):
     if size_flags["is_uncommon_ratio"]:   score += 0.05
     if q_hint:                            score += 0.05
     if ai_inconsistent:                   score += 0.40
+    if ai_ela:                            score += 0.12
+    if ai_periodic:                       score += 0.18
+    if ai_banding:                        score += 0.10
+    if ai_sym:                            score += 0.08
+    if ai_palette:                        score += 0.08
+
 
     prob_ai = float(max(0.0, min(1.0, score)))
     w, h = size_flags["size"]
